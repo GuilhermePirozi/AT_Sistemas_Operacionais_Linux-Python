@@ -6,7 +6,6 @@ import random
 import time
 from datetime import datetime
 
-
 def simular_bloco(numero_do_bloco, samples_partial):
     gerador = random.Random(os.getpid() + time.time_ns() + numero_do_bloco)
     hits = 0
@@ -20,14 +19,12 @@ def simular_bloco(numero_do_bloco, samples_partial):
 
     return hits, os.getpid()
 
-
 def executar_serial(total_samples):
     inicio = time.perf_counter()
     hits, _ = simular_bloco(0, total_samples)
     pi_estimado = 4 * hits / total_samples
     tempo = time.perf_counter() - inicio
     return pi_estimado, tempo
-
 
 def escrever_log(caminho, blocos_concluidos, n_tasks):
     instante = datetime.now().isoformat(timespec="seconds")
@@ -39,11 +36,9 @@ def escrever_log(caminho, blocos_concluidos, n_tasks):
             f"({blocos_concluidos}/{n_tasks}) | pid={os.getpid()}\n"
         )
 
-
 async def tarefa_de_monitoramento(evento_fim):
     while not evento_fim.is_set():
         await asyncio.sleep(0.1)
-
 
 async def executar_paralelo(n_tasks, chunk_size):
     inicio = time.perf_counter()
@@ -88,33 +83,134 @@ async def executar_paralelo(n_tasks, chunk_size):
     tempo = time.perf_counter() - inicio
     return pi_estimado, tempo, pids_workers
 
-
 def ler_argumentos():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--n-tasks", type=int, default=100)
+    parser.add_argument("--n-tasks", type=int)
     parser.add_argument("--chunk-size", type=int, default=100_000)
+    parser.add_argument(
+        "--comparar",
+        action="store_true",
+        help="executa testes com 1, 5 e 10 milhoes de amostras",
+    )
     argumentos = parser.parse_args()
 
-    if argumentos.n_tasks <= 0 or argumentos.chunk_size <= 0:
+    if argumentos.n_tasks is not None and argumentos.n_tasks <= 0:
+        parser.error("n-tasks deve ser maior que zero")
+
+    if argumentos.chunk_size <= 0:
         parser.error("n-tasks e chunk-size devem ser maiores que zero")
 
     return argumentos
 
+async def executar_teste(n_tasks, chunk_size):
+    total_samples = n_tasks * chunk_size
+    pi_serial, tempo_serial = executar_serial(total_samples)
+    pi_paralelo, tempo_paralelo, pids_workers = await executar_paralelo(
+        n_tasks, chunk_size
+    )
+
+    return {
+        "n_tasks": n_tasks,
+        "chunk_size": chunk_size,
+        "total_samples": total_samples,
+        "pi_serial": pi_serial,
+        "tempo_serial": tempo_serial,
+        "pi_paralelo": pi_paralelo,
+        "tempo_paralelo": tempo_paralelo,
+        "pids_workers": pids_workers,
+    }
+
+
+def formatar_amostras(total_samples):
+    return f"{total_samples:,}".replace(",", ".")
+
+async def executar_comparacao(chunk_size):
+    resultados = []
+
+    for n_tasks in (10, 50, 100):
+        total_samples = n_tasks * chunk_size
+        print(f"Executando teste com {formatar_amostras(total_samples)} amostras...")
+        resultados.append(await executar_teste(n_tasks, chunk_size))
+
+    print("\n" + "=" * 72)
+    print("COMPARACAO FINAL")
+    print("=" * 72)
+
+    todos_os_tempos = []
+    for numero_teste, resultado in enumerate(resultados, start=1):
+        mais_rapida = (
+            "Versao serial"
+            if resultado["tempo_serial"] < resultado["tempo_paralelo"]
+            else "Versao paralela"
+        )
+        print(f"\nTESTE {numero_teste}")
+        print(f"Numero de tarefas (n_tasks): {resultado['n_tasks']}")
+        print(
+            "Tamanho de cada bloco (chunk_size): "
+            f"{formatar_amostras(resultado['chunk_size'])}"
+        )
+        print(
+            "Quantidade total de amostras: "
+            f"{formatar_amostras(resultado['total_samples'])}"
+        )
+        print(
+            f"Versao serial:   pi estimado = {resultado['pi_serial']:.8f} "
+            f"| tempo de execucao = {resultado['tempo_serial']:.4f} s"
+        )
+        print(
+            f"Versao paralela: pi estimado = {resultado['pi_paralelo']:.8f} "
+            f"| tempo de execucao = {resultado['tempo_paralelo']:.4f} s"
+        )
+        print(f"Versao mais rapida: {mais_rapida}")
+        print("-" * 72)
+        todos_os_tempos.extend(
+            [
+                (
+                    resultado["tempo_serial"],
+                    "Versao serial",
+                    resultado["total_samples"],
+                ),
+                (
+                    resultado["tempo_paralelo"],
+                    "Versao paralela",
+                    resultado["total_samples"],
+                ),
+            ]
+        )
+
+    menor = min(todos_os_tempos)
+    maior = max(todos_os_tempos)
+    print("\nRESUMO DOS TEMPOS")
+    print("-" * 72)
+    print(
+        f"Menor tempo: {menor[0]:.4f} s - {menor[1]} "
+        f"com {formatar_amostras(menor[2])} amostras"
+    )
+    print(
+        f"Maior tempo: {maior[0]:.4f} s - {maior[1]} "
+        f"com {formatar_amostras(maior[2])} amostras"
+    )
 
 async def main():
     argumentos = ler_argumentos()
-    total_samples = argumentos.n_tasks * argumentos.chunk_size
 
-    pi_serial, tempo_serial = executar_serial(total_samples)
-    pi_paralelo, tempo_paralelo, pids_workers = await executar_paralelo(
-        argumentos.n_tasks, argumentos.chunk_size
-    )
+    if argumentos.comparar or argumentos.n_tasks is None:
+        await executar_comparacao(argumentos.chunk_size)
+        return
 
+    resultado = await executar_teste(argumentos.n_tasks, argumentos.chunk_size)
+
+    total_samples = resultado["total_samples"]
     print(f"Total de amostras: {total_samples}")
-    print(f"Serial   -> pi = {pi_serial:.8f} | tempo = {tempo_serial:.4f} s")
-    print(f"Paralela -> pi = {pi_paralelo:.8f} | tempo = {tempo_paralelo:.4f} s")
-    print(f"PIDs dos workers: {sorted(pids_workers)}")
-
+    print(
+        f"Serial   -> pi = {resultado['pi_serial']:.8f} "
+        f"| tempo = {resultado['tempo_serial']:.4f} s"
+    )
+    print(
+        f"Paralela -> pi = {resultado['pi_paralelo']:.8f} "
+        f"| tempo = {resultado['tempo_paralelo']:.4f} s"
+    )
+    print(f"PIDs dos workers: {sorted(resultado['pids_workers'])}")
 
 if __name__ == "__main__":
     multiprocessing.freeze_support()
